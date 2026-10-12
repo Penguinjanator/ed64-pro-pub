@@ -43,7 +43,8 @@
 #define EPO_TYPE_RAM            0x15 //ram buffer
 #define EPO_TYPE_NOP            0x16
 #define EPO_TYPE_DBG            0x17 //uart debug port
-#define EPO_TYPE_USB            0x18
+#define EPO_TYPE_USB            0x18 //usb direct
+#define EPO_TYPE_SDC            0x19 //sd card
 //****************************************************************************** CMD_FCI
 #define CMD_FCI                 0x82
 #define FCI_SCMD_MEM_SET        0x10
@@ -76,6 +77,8 @@
 #define DEV_SCMD_CIC_UPD        0x25
 #define DEV_SCMD_BRM_RMAP       0x26
 #define DEV_SCMD_HAN_STAT       0x27
+#define DEV_SCMD_SET_FLAGS      0x28
+#define DEV_SCMD_BRM_SYNC       0x29
 //****************************************************************************** CMD_BOOT
 #define CMD_BOOT                0xF0
 #define BOOT_SCMD_APP_MODE      0x10
@@ -102,7 +105,6 @@
 #define RTCC_GET_ESTCAL         4
 #define RTCC_GET_DEVIAT         5
 
-#define MBX_READY               0x52445921
 
 typedef u8 EpoType;
 
@@ -114,6 +116,17 @@ typedef struct {
     EpoType dst_type;
     u16 reserved;
 } EpoXfer;
+//****************************************************************************** memory map
+//FCI:
+//0x0F000000 sst buff
+//0x0F800000 IPL4
+//0x0FF00000 menu
+//0x0FFE0000 bram
+//0x10000000 regs
+
+//PI:
+//0x1F000000 sst buff
+//0x1F800000 regs
 //******************************************************************************
 u32 ed_reg_rd(vu32 *reg);
 void ed_reg_wr(vu32 *reg, u32 val);
@@ -340,8 +353,23 @@ void ed_run_xfer() {
     ed_fifo_wr(&ack, 1);
 }
 
+u8 ed_sysstat() {
+
+    while (1) {
+
+        u8 v1 = ed_reg_rd(&EDIO->SYSSTAT) & ~SYSSTAT_STROBE;
+        u8 v2 = ed_reg_rd(&EDIO->SYSSTAT) & ~SYSSTAT_STROBE;
+
+        if (v1 != v2) {
+            continue;
+        }
+
+        return v1;
+    }
+}
+
 void ed_wait_mcu() {
-    while ((ed_reg_rd(&EDIO->SYSSTAT) & SYSSTAT_BUSY) != 0);
+    while ((ed_sysstat() & SYSSTAT_BUSY) != 0);
 }
 //******************************************************************************
 
@@ -436,7 +464,6 @@ u8 ed_epo_rd(u32 addr, void *dst, u32 len, EpoType epo) {
     return 0;
 }
 //******************************************************************************
-
 u8 ed_usb_wr_fci(u32 src, u32 len) {
 
     EpoXfer xfer = {
@@ -466,12 +493,12 @@ int ed_dbg_wr_urt(char *buf, unsigned int len) {
 }
 
 int ed_dbg_wr_usb(char *buf, unsigned int len) {
-    ed_usb_wr((u8 *) buf, len);
+    ed_usb_wr(buf, len);
     return len;
 }
 
-void ed_mbx_wr(u32 val) {
-    ed_reg_wr(&EDIO->MBX, val);
+void ed_mbx_wr(MbxOp val) {
+    ed_reg_wr(&EDIO->MBX, (u32) val);
 }
 
 u32 ed_mbx_rd() {
@@ -486,7 +513,7 @@ u32 ed_mbx_rd() {
 }
 
 void ed_mbx_reset() {
-    ed_mbx_wr(0);
+    ed_mbx_wr(MBX_NOP);
 }
 
 void ed_mbx_busy() {
@@ -695,7 +722,7 @@ void ed_fs_dir_seek_idx(u16 *idx) {
 }
 
 void ed_fs_dir_get_recs(u16 start_idx, u16 amount, u16 max_name_len) {
-    
+
     ed_scmd_tx(CMD_FS, FS_SCMD_DIR_GET);
     ed_fifo_wr(&start_idx, 2);
     ed_fifo_wr(&amount, 2);
@@ -737,7 +764,91 @@ u8 ed_fs_dir_test(u8 *path) {
     ed_tx_string(path);
     return ed_check_status();
 }
+//****************************************************************************** disk direct access
 
+u8 ed_disk_read(void *dst, u32 saddr, u32 slen) {
+
+    u8 resp;
+
+    if (slen == 0) {
+        return 0;
+    }
+
+    slen *= 512;
+
+    EpoXfer xfer = {
+        .src_type = EPO_TYPE_SDC, .src_addr = saddr,
+        .dst_type = EPO_TYPE_LINK_ACK, .dst_addr = 0,
+        .len = slen
+    };
+
+    ed_cmd_epo_xfer(&xfer);
+
+    resp = ed_fifo_rd_ack(dst, slen);
+    if (resp)return resp;
+
+    return ed_check_status();
+}
+
+u8 ed_disk_read_fci(u32 fci_addr, u32 saddr, u32 slen) {
+
+    if (slen == 0) {
+        return 0;
+    }
+
+    slen *= 512;
+
+    EpoXfer xfer = {
+        .src_type = EPO_TYPE_SDC, .src_addr = saddr,
+        .dst_type = EPO_TYPE_FCI, .dst_addr = fci_addr,
+        .len = slen
+    };
+    ed_cmd_epo_xfer(&xfer);
+
+    return ed_check_status();
+}
+
+u8 ed_disk_write(void *src, u32 saddr, u32 slen) {
+
+    u8 resp;
+
+    if (slen == 0) {
+        return 0;
+    }
+
+    slen *= 512;
+
+    EpoXfer xfer = {
+        .src_type = EPO_TYPE_LINK_ACK, .src_addr = 0,
+        .dst_type = EPO_TYPE_SDC, .dst_addr = saddr,
+        .len = slen
+    };
+
+    ed_cmd_epo_xfer(&xfer);
+
+    resp = ed_fifo_wr_ack(src, slen);
+    if (resp)return resp;
+
+    return ed_check_status();
+}
+
+u8 ed_disk_write_fci(u32 fci_addr, u32 saddr, u32 slen) {
+
+    if (slen == 0) {
+        return 0;
+    }
+    
+    slen *= 512;
+
+    EpoXfer xfer = {
+        .src_type = EPO_TYPE_FCI, .src_addr = fci_addr,
+        .dst_type = EPO_TYPE_SDC, .dst_addr = saddr,
+        .len = slen
+    };
+    ed_cmd_epo_xfer(&xfer);
+
+    return ed_check_status();
+}
 //****************************************************************************** memory io
 
 void ed_fci_set(u8 val, u32 addr, u32 len) {
@@ -877,8 +988,14 @@ u8 ed_dev_set_cfg(DevCfg *cfg) {
 
 void ed_dev_wr_swap(u8 swap_en) {
 
-    ed_scmd_tx(CMD_DEV, DEV_SCMD_WR_SWAP);
-    ed_fifo_wr(&swap_en, 1);
+    DevFlag val = swap_en ? DEV_FLAG_WRSW : 0;
+    ed_dev_set_flags(DEV_FLAG_WRSW, val);
+}
+
+void ed_dev_wr_en(u8 wr_en) {
+
+    DevFlag val = wr_en ? DEV_FLAG_WREN : 0;
+    ed_dev_set_flags(DEV_FLAG_WREN, val);
 }
 
 u8 ed_dev_xps(u8 *path, u32 base_addr) {
@@ -909,9 +1026,30 @@ u8 ed_dev_brm_rmap(u32 addr) {
     return ed_check_status();
 }
 
+u8 ed_dev_brm_sync(BrmCmd cmd) {
+
+    u8 cmd8 = cmd;
+
+    ed_scmd_tx(CMD_DEV, DEV_SCMD_BRM_SYNC);
+    ed_fifo_wr(&cmd8, 1);
+
+    return ed_check_status();
+}
+
 void ed_dev_han_stat(HanStatus *stat) {
+
     ed_scmd_tx(CMD_DEV, DEV_SCMD_HAN_STAT);
     ed_fifo_rd(stat, sizeof (HanStatus));
+}
+
+void ed_dev_set_flags(DevFlag f_mask, DevFlag f_val) {
+
+    u32 flags = ((f_mask & 0xffff) << 16) | (f_val & 0xffff);
+
+    ed_scmd_tx(CMD_DEV, DEV_SCMD_SET_FLAGS);
+    ed_fifo_wr(&flags, 4);
+
+    ed_wait_mcu(); //wait till flag will be applied
 }
 
 void ed_rtc_get(RtcTime *rtc) {
@@ -939,29 +1077,6 @@ s32 ed_rtcc_curval() {
     ed_fifo_rd(&resp, 4);
 
     return resp;
-}
-
-u8 ed_sysstat() {
-
-    while (1) {
-
-        u8 v1 = ed_reg_rd(&EDIO->SYSSTAT);
-        u8 v2 = ed_reg_rd(&EDIO->SYSSTAT);
-
-        if ((v1 & SYSSTAT_STROBE) == (v2 & SYSSTAT_STROBE)) {
-            continue;
-        }
-
-        if ((v1 | SYSSTAT_STROBE) != (v2 | SYSSTAT_STROBE)) {
-            continue;
-        }
-
-        if ((v1 & SYSSTAT_CMSK) != SYSSTAT_CVAL) {
-            continue;
-        }
-
-        return v1;
-    }
 }
 
 double ed_measure_fps() {

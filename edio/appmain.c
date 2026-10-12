@@ -453,6 +453,35 @@ void mailbox() {
     }
 }
 
+u8 diskIO_rd() {
+
+    u8 resp;
+    u8 buff[512];
+
+    //use ed_disk_read_fci for fastest access (on-board dram ADDR_FCI_ROM)
+    //read LBA 0
+    resp = ed_disk_read(buff, 0, sizeof (buff) / 512);
+    if (resp)return resp;
+
+    //print sector data
+    for (int i = 0; i < 512; i++) {
+        if (i % 4 == 0 && i % 16 != 0) {
+            printf(".");
+        }
+        if (i % 16 == 0 && i > 0) {
+            printf("\n");
+        }
+        printf("%02X", buff[i]);
+    }
+    printf("\n");
+
+    console_render();
+
+    waitAB();
+
+    return 0;
+}
+
 int main(void) {
 
     /* Initialize peripherals */
@@ -481,6 +510,7 @@ int main(void) {
         MENU_READ_DEVID,
         MENU_TCPIP_TEST,
         MENU_MAILBOX,
+        MENU_DISK_IO_RD,
         MENU_SIZE
     };
 
@@ -500,6 +530,7 @@ int main(void) {
     menu[MENU_READ_DEVID] = "read device id";
     menu[MENU_TCPIP_TEST] = "tcp/ip test";
     menu[MENU_MAILBOX] = "mailbox io";
+    menu[MENU_DISK_IO_RD] = "disk direct io (read)";
 
     while (1) {
 
@@ -594,6 +625,11 @@ int main(void) {
 
             case MENU_MAILBOX:
                 mailbox();
+                break;
+
+            case MENU_DISK_IO_RD:
+                //firmware update may be required
+                resp = diskIO_rd();
                 break;
         }
 

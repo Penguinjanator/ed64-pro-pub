@@ -26,13 +26,19 @@ typedef struct {
 
 #define SYSSTAT_BTN     (1 << 16)
 #define MCTR_FREQ       50000000.0
+
+typedef enum {
+    MBX_NOP = 0,
+    MBX_READY = 0x52445921,
+    MBX_SST_EXIT = 0xED640001,
+} MbxOp;
 //****************************************************************************** fs
 
 typedef struct {
     //structure size hardcoded in ed_fs_rx_file_info
     u32 size;
-    u16 date; //ms dos dormat
-    u16 time; //ms dos dormat
+    u16 date;
+    u16 time;
     u8 is_dir;
     u8 *file_name;
 } FileInfo;
@@ -123,10 +129,23 @@ typedef enum {
     DEV_ROM_DDROM,
 } DevRomType;
 
-typedef struct {//do not use enum types!
+typedef enum {
+    DEV_FLAG_WRSW = 0x01, //rom write swap (when read from sdc)
+    DEV_FLAG_WREN = 0x02, //rom write enable
+    DEV_FLAG_BOOT = 0x04, //enable boot rom
+} DevFlag;
+
+typedef enum {//used only for save states
+    DEV_BRM_PAUSE, //   pause bram handler
+    DEV_BRM_SAVE, //    save bram to currently open file
+    DEV_BRM_LOAD, //    load bram from currently open file
+    DEV_BRM_RESUME//    resume bram handler
+} BrmCmd;
+
+typedef struct {//don't use enum types unless you're sure they're 32-bit!
     u32 brom_type; //   boot rom type
     u32 gpak_size; //   gpak rom size
-    u32 brm_size; //    gpak backup tam size
+    u32 brm_size; //    gpak backup ram size
     u32 brm_type; //    gpak bacup ram type
     u32 rtc_mode; //    DevRtcMode
     u32 dd_en; //       use dd addon
@@ -174,11 +193,12 @@ typedef struct {
 #define ADDR_PI_ROM     (KSEG1 | 0x10000000)
 #define ADDR_PI_DDIPL   (KSEG1 | 0x06000000)
 #define ADDR_PI_SRAM    (KSEG1 | 0x08000000)
-#define ADDR_PI_SYM     (ADDR_PI_ROM + 0x3F80000)//dbg info
+#define ADDR_PI_SYM     (ADDR_PI_ROM + 0x3F80000)//dbg info (.sym file)
 #define SIZE_RAM        0x10000000
 //****************************************************************************** 
 u32 max_ed(u32 v1, u32 v2);
 u32 min_ed(u32 v1, u32 v2);
+
 u8 ed_init_hw();
 u32 ed_fifo_avb();
 void ed_fifo_flush();
@@ -194,7 +214,7 @@ u8 ed_usb_wr(void *src, u32 len);
 u8 ed_urt_wr(u8 *src, u32 len);
 int ed_dbg_wr_urt(char *buf, unsigned int len);
 int ed_dbg_wr_usb(char *buf, unsigned int len);
-void ed_mbx_wr(u32 val);
+void ed_mbx_wr(MbxOp val);
 u32 ed_mbx_rd();
 
 u8 ed_fs_rx_next_rec(FileInfo *inf);
@@ -220,6 +240,11 @@ u8 ed_fs_file_seek_pat(u8 *pat, u8 psize, u32 fsize, u32 *paddr);
 u8 ed_fs_file_test(u8 *path);
 u8 ed_fs_dir_test(u8 *path);
 
+u8 ed_disk_read(void *dst, u32 saddr, u32 slen);
+u8 ed_disk_read_fci(u32 fci_addr, u32 saddr, u32 slen);
+u8 ed_disk_write(void *src, u32 saddr, u32 slen);
+u8 ed_disk_write_fci(u32 fci_addr, u32 saddr, u32 slen);
+
 void ed_fci_set(u8 val, u32 addr, u32 len);
 u8 ed_fci_test(u8 val, u32 addr, u32 len);
 void ed_fci_rd(u32 addr, void *dst, u32 len);
@@ -235,10 +260,13 @@ void ed_dev_game_ctr();
 u8 ed_dev_set_path(u8 *path, DevPathType path_type);
 u8 ed_dev_set_cfg(DevCfg *cfg);
 void ed_dev_wr_swap(u8 swap_en);
+void ed_dev_wr_en(u8 wr_en);
 u8 ed_dev_xps(u8 *path, u32 base_addr);
 u8 ed_dev_get_path(u8 *path, DevPathType path_type);
 u8 ed_dev_brm_rmap(u32 addr);
+u8 ed_dev_brm_sync(BrmCmd cmd);
 void ed_dev_han_stat(HanStatus *stat);
+void ed_dev_set_flags(DevFlag f_mask, DevFlag f_val);
 
 void ed_rtc_get(RtcTime *rtc);
 void ed_rtc_set(RtcTime *rtc);
