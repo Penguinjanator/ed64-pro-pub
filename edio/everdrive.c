@@ -33,7 +33,7 @@
 //****************************************************************************** CMD_EPO
 #define CMD_EPO                 0x81
 #define EPO_SCMD_XFER           0x10
-#define EPO_SCMD_MSR            0x11 //one time wr enable for protected memory
+#define EPO_SCMD_WRE            0x11 //one time wr enable for protected memory
 
 #define EPO_TYPE_LINK           0x10 //link (usb or console)
 #define EPO_TYPE_LINK_ACK       0x11 //link (usb or console 1k blocks)
@@ -105,6 +105,8 @@
 #define RTCC_GET_ESTCAL         4
 #define RTCC_GET_DEVIAT         5
 
+#define EPO_WRKEY_FLA           0x27101983
+#define EPO_WRKEY_SDC           0xDEADBEEF
 
 typedef u8 EpoType;
 
@@ -463,7 +465,15 @@ u8 ed_epo_rd(u32 addr, void *dst, u32 len, EpoType epo) {
 
     return 0;
 }
+
+void ed_epo_wre(u32 wrkey) {
+
+    //turn off write protection. must be used before every sdc or fla write
+    ed_scmd_tx(CMD_EPO, EPO_SCMD_WRE);
+    ed_fifo_rd(&wrkey, 4);
+}
 //******************************************************************************
+
 u8 ed_usb_wr_fci(u32 src, u32 len) {
 
     EpoXfer xfer = {
@@ -824,6 +834,7 @@ u8 ed_disk_write(void *src, u32 saddr, u32 slen) {
         .len = slen
     };
 
+    ed_epo_wre(EPO_WRKEY_SDC);
     ed_cmd_epo_xfer(&xfer);
 
     resp = ed_fifo_wr_ack(src, slen);
@@ -837,7 +848,7 @@ u8 ed_disk_write_fci(u32 fci_addr, u32 saddr, u32 slen) {
     if (slen == 0) {
         return 0;
     }
-    
+
     slen *= 512;
 
     EpoXfer xfer = {
@@ -845,6 +856,8 @@ u8 ed_disk_write_fci(u32 fci_addr, u32 saddr, u32 slen) {
         .dst_type = EPO_TYPE_SDC, .dst_addr = saddr,
         .len = slen
     };
+    
+    ed_epo_wre(EPO_WRKEY_SDC);
     ed_cmd_epo_xfer(&xfer);
 
     return ed_check_status();
